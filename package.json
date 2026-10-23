@@ -1,0 +1,55 @@
+{
+  "name": "dsh-gui-debug",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "description": "Unified GUI debugging tools with managed Wayland environments and consent-bound desktop observation.",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.mjs",
+    "dist",
+    "defaults",
+    "locale",
+    "docs",
+    "README.md",
+    "cordis.patch.yml",
+    "icon.svg"
+  ],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
+    "check:types": "tsc --noEmit && tsc -p tsconfig.runtime.json",
+    "check:contracts": "node scripts/check-contracts.mjs",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm run check:types && npm run check:contracts && npm test"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
+  }
+}
