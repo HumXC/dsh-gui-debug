@@ -1,200 +1,186 @@
 # dsh-gui-debug
 
-DSH GUI 调试插件：统一工具、Cage/Sway 受管环境、独立应用生命周期、截图与输入，以及经用户确认的只读 host 访问。已提供 Cordis 入口、运行时和可安装打包。外部程序由用户安装；插件负责检测、管理、封装与调用，不修改系统配置。
+让 DSH 中的 AI 助手启动图形应用、查看截图、操作键盘和鼠标，并读取日志排查问题。适合在 Linux 上调试原生 Wayland 应用、复现界面问题，以及检查交互后的显示结果。
 
-## 两层边界
+插件可以创建独立的 Cage 或 Sway 图形环境，也可以在你明确授权后，只读查看已有桌面。默认使用无头环境，无需在当前桌面打开调试窗口。
 
-```text
-LLM → gui_debug_* 统一工具 → GuiDriver 后端驱动 → WM 原生能力或外部程序
+## 能做什么
+
+- **启动和调试应用**：先创建图形环境，再启动一个或多个应用。应用退出后环境仍然保留，方便再次运行。
+- **查看界面**：截取整个输出或指定区域，在对话中返回 PNG 图片。
+- **操作应用**：输入文本、发送按键和快捷键、长按按键、相对移动鼠标、在当前位置点击和滚动。
+- **管理多个窗口**：使用 Sway 时，可以列出窗口并切换焦点。
+- **复用配置**：把常用的驱动、分辨率和环境设置保存为工作区配置。
+- **排查失败**：查看应用状态与日志；停止环境后，截图和日志仍会保留。
+
+目前**不支持绝对鼠标定位、按截图坐标点击、拖拽和直接截取指定窗口**。只支持原生 Wayland 应用，不提供 X11/XWayland 应用连接。具体可用操作还取决于已安装的工具和图形环境，助手会在使用前检查。
+
+## 使用前准备
+
+需要 Linux 本地执行环境、Node.js 24 或更新版本，以及 DSH 0.2.0-rc.2。DSH 的文件与进程执行必须使用同一个本地工作区；当前不支持远程执行环境。
+
+外部图形工具需要你自行安装。插件负责检查和调用，不会安装系统软件或修改系统配置。
+
+| 用途 | 所需程序 |
+| --- | --- |
+| Cage 图形环境，适合单应用调试 | `cage`（版本至少 0.3.1）、`wayland-info`；输出尺寸管理使用 `wlr-randr` |
+| Sway 图形环境，适合多窗口调试 | `sway`、`swaymsg`、`wayland-info` |
+| 截图 | `grim` |
+| 文本、按键和快捷键 | `wtype` |
+| 鼠标移动、点击和滚动 | `wlrctl` |
+
+Cage 和 Sway 按需选择即可。缺少某项截图或输入工具时，对应能力可能不可用，并不一定阻止环境启动。待调试的应用也需要事先安装或构建好。
+
+这些程序必须能被 **DSH 进程**找到。在另一个终端修改 PATH，不会改变已经运行的 DSH 的环境；可以从准备好依赖的终端启动 DSH，或在驱动的 `options.executables` 中指定程序路径。
+
+## 安装
+
+### 从 GitHub Release 安装
+
+可以直接安装 GitHub Release 中的预构建包，无需在本地编译：
+
+```sh
+dsh plugin --profile web add https://github.com/HumXC/dsh-gui-debug/releases/latest/download/dsh-gui-debug.tgz
 ```
 
-工具层负责配置解析、实例/应用索引、受管进程、策略检查、串行调度、坐标换算和附件。驱动负责自己的配置入口、显示连接和各项操作实现。Cage 截图可以调用 grim，其他 WM 可以使用原生截图，公共工具接口不变化。没有独立的截图/输入 provider 注册层。
+如需固定版本，将 URL 中的 `latest/download` 替换为 `download/v<版本号>`。Release 同时提供 `SHA256SUMS`，用于核对下载文件。
 
-## 运行文件目录
+### 从本地源码安装
 
-运行时文件统一以当前调试工作区为根，放在 .dsh/gui-debug/ 下，按实例隔离：
+在项目根目录执行：
 
-```text
-.dsh/gui-debug/instances/<instanceId>/
-├── artifacts/       # 截图等产物
-├── logs/            # 驱动、应用和 helper 日志
-├── runtime/         # 受管环境的 socket 等运行文件
-├── wm/              # 驱动生成的 WM 配置
-├── cache/           # 实例或观测 helper 缓存
-└── settings/        # 受管环境选择 private 时的应用设置
+```sh
+npm ci
+npm run build
+dsh plugin --profile web add "file:$(pwd)"
 ```
 
-host 仅使用产物、日志和观测 helper 所需目录，不创建 WM 配置或私有显示 runtime。停止受管实例或断开 host 后保留截图和日志；确认进程范围退出后仅移除本插件 runtime 中的 socket/lock。目录使用 0700、配置及日志使用 0600，并检查路径归属与符号链接。profile 位于 .dsh/gui-debug/profiles/；活实例和授权不会从历史文件自动恢复。
+`web` 是目标 DSH profile。如果使用其他 profile，请替换为对应名称。安装完成后重启对应的 DSH 实例。插件会通过自带的配置注册工具，无需手工编辑 profile 配置。
 
-## 文件入口
+使用 Nix 的用户可以先在项目根目录运行 `nix develop path:.`，进入包含 Node、pnpm 和图形调试工具的开发环境。该环境由 [flake.nix](./flake.nix) 定义，不会自动启动图形环境。
 
-- [实例配置与 JSON Schema](./src/config.ts)：公共配置、单次覆盖和默认值。
-- [工具声明](./src/tools.ts)、[请求与结果类型](./src/api.ts)：9 个统一工具与协议。
-- [驱动契约](./src/driver.ts)：静态元数据、受管进程入口、运行上下文及必须实现的函数。
-- [Cage 声明](./src/drivers/cage.ts)、[Sway 声明](./src/drivers/sway.ts)、[host 声明](./src/drivers/host.ts)：选项 Schema、默认配置、依赖候选和能力路线。
-- [host 授权与使用](./docs/HOST.md)：连接已有桌面；禁止生命周期管理，必须经过用户确认。
-- [Sway 最小配置](./defaults/sway.config)：没有 bar、用户配置 include、自启动命令或应用快捷键绑定。
-- [沙盒与桌面资源说明](./docs/SANDBOX.md)：DSH 执行边界、字体/GTK 主题、XDG 与 WM 配置的区别。
-- [类型化示例](./examples/contracts.ts)、[声明校验](./scripts/check-contracts.mjs)。
+## 开始使用
 
-插件入口为 [index.mjs](./index.mjs)，运行时位于 [engine.mjs](./src/runtime/engine.mjs)、[platform.mjs](./src/runtime/platform.mjs) 和 [drivers.mjs](./src/runtime/drivers.mjs)。原始讨论保存在 [OUTLINE.md](./OUTLINE.md)。
+安装后直接向 DSH 助手描述任务即可，不必手动编写工具调用。例如：
 
-## 实例与应用分开
+> 检查 GUI 调试依赖是否齐全。使用 Cage 创建 1280×720 的无头环境，启动我刚构建的 Wayland 应用，等窗口出现后截图。如果启动失败，请读取日志。完成后停止调试环境。
 
-本节指 kind=managed 的受管实例；host 只连接已有桌面，见下文。受管实例代表图形环境。start 不接受应用命令；环境可以先运行，之后 exec 一次或多次。每次 exec 创建独立 applicationId，应用退出不自动停止环境。停止实例会清理其中所有受管应用与 helper，并保留产物。
+需要操作界面时，可以明确描述键盘步骤：
 
-```text
-实例：starting → running → stopping → stopped
-                     └── 自行退出/异常 → exited / failed
+> 在调试环境中启动应用，用 Tab 切换到输入框，输入测试文本，再截图检查结果。
 
-应用：starting → running → exited
-          └── 启动失败 → failed
-```
+需要多窗口调试时：
 
-环境 running 且没有 starting/running 应用，即为空闲状态，不额外维护 idle。实例状态返回应用数量；应用历史通过 inspect applications 分页读取。驱动负责环境状态，工具层通过受管应用进程更新应用状态。进程运行不代表窗口已经显示，也不代表应用已经响应输入。
+> 使用 Sway 创建调试环境，启动应用，列出窗口并聚焦主窗口，然后截图。
 
-Cage 使用不带应用的启动模式，后续应用连接同一 socket；已核对 Cage 0.3.1 源码支持该模式。不得通过 sleep 等占位程序伪造独立环境。其他版本需确认能力，不支持时明确报告。Sway 也先独立启动，再执行应用。
+通常的工作顺序是：**检查依赖 → 创建环境 → 启动应用 → 截图或操作 → 查看结果和日志 → 停止环境**。进程已经启动不代表窗口已经显示；应用异步绘制时，助手可能需要等待后再次截图。
 
-## 实例配置
+默认使用 Cage、无头模式、1280×720 分辨率、缩放 1，并继承用户的桌面设置。停止环境会结束其中的受管应用；仅关闭某个应用不会自动停止环境。
 
-最小 Cage 配置：
+## 选择环境与保存配置
+
+| 方式 | 适用场景 |
+| --- | --- |
+| Cage | 单应用界面和键盘交互调试 |
+| Sway | 多窗口应用、窗口列表和焦点切换 |
+| host | 经你确认后，只读观察已有桌面 |
+
+受管环境支持 `headless`（无头）和 `nested`（在已有桌面中打开独立图形窗口）两种模式。nested 的运行依赖已有显示环境。
+
+你可以让助手保存常用配置，下次按名称启动。以下是一个 Sway 实例配置示例，可作为内联配置或保存为工作区配置：
 
 ```json
 {
   "schemaVersion": 1,
-  "driver": { "id": "cage" }
-}
-```
-
-Sway 配置示例：
-
-```json
-{
-  "schemaVersion": 1,
-  "driver": {
-    "id": "sway",
-    "options": { "config": { "source": "bundled", "name": "minimal" } }
-  },
+  "driver": { "id": "sway" },
   "mode": "headless",
   "display": { "width": 1280, "height": 720, "scale": 1 },
   "desktopSettings": "inherit"
 }
 ```
 
-公共默认值：无头、1280×720、缩放 1、继承用户桌面设置、环境启动超时 15 秒、停止超时 5 秒。start 不指定来源时使用 Cage 默认配置。nested 表示宿主桌面中的独立 compositor 窗口。
+Sway 默认使用内置最小配置，不加载你的个人 Sway 配置。应用的桌面设置独立控制：`inherit` 允许应用读取已有的 XDG 设置和资源；`private` 改用实例内的私有设置目录。字体和主题能否正确显示，还取决于系统资源与 DSH 执行权限。
 
-公共 Schema 使用 JSON Schema 2020-12，以 TypeScript 常量 instanceConfigSchema 导出，可直接序列化为 JSON。driver id 是开放字符串；driver.options 另用注册驱动的 optionsSchema 校验。公共 Schema 不写死 Cage/Sway 分支。
+保存的配置只用于创建新实例，修改配置不会影响已经运行的环境。应用命令使用独立的可执行文件和参数列表，不把整段 shell 命令当作程序名。
 
-配置解析：确定 start 的来源 → 公共/驱动默认值 → profile 或内联配置 → start overrides → 最终校验和依赖探测。JSON Schema 的 default 只是声明，不自动填充值。env 按键叠加、null 移除继承变量；driverOptions 按顶层键覆盖，嵌套对象和数组整体替换；display 提供时必须完整给出。
+## 查看已有桌面
 
-start overrides 只影响新实例，不改变 driver id。exec 只允许应用级 cwd、env 和启动超时，不重新选择驱动或修改已启动环境。exec 的默认 cwd/env 来自实例配置，启动超时不是应用寿命限制。相对应用/用户配置路径以工作区根目录为基准，驱动内置资源路径以驱动包为基准。
+如果希望助手查看当前桌面，可以这样请求：
 
-profile 按工作区保存配方，put 完整替换，delete 不停止活实例。实例持有自己的配置快照。对外展示配置和日志时遮蔽敏感环境值。
+> 请求只读查看我的当前桌面，截图帮助我分析这个显示问题。
 
-## WM 配置与桌面设置
+助手会通过 `gui_debug_host` 请求确认，并说明用途和读取范围。只有你明确同意后，才会连接和执行获准操作。host 仅支持观察和截图，**不能输入、点击、启动应用、修改设置或停止你的桌面**。
 
-WM 的配置入口由驱动独立控制，不通过替换整个 XDG_CONFIG_HOME 实现：
+你可以让助手断开连接，也可以在 DSH 中输入：
 
-- Cage 不需要 WM 配置文件。
-- Sway 显式使用 --config 指向实例 wmConfigDirectory 中生成的文件，默认 base 是内置最小配置；file/inline 可以替换 base。
-- 其他 WM 的配置参数或搜索规则由对应驱动处理。
+```text
+/gui-debug-disconnect-host
+```
 
-应用的 desktopSettings 与此独立：inherit 默认保留用户 XDG config/data/state，让 GTK、Fontconfig 等读取桌面资源；private 使用实例私有的三个 XDG 目录。两种方式都保持实例专属 runtime 和 cache，保留系统资源目录与已有字体/主题环境。private 不等于空白 HOME 或文件沙盒。
+这会撤销本会话的 host 读取授权。桌面截图依赖相应 Wayland 协议，并非所有桌面环境都兼容。更多说明见 [已有桌面访问](./docs/HOST.md)。
 
-受管实例的连接变量（XDG_RUNTIME_DIR、WAYLAND_DISPLAY、DISPLAY、XAUTHORITY、SWAYSOCK、I3SOCK、DBUS_SESSION_BUS_ADDRESS）、后端选择变量（WLR_BACKENDS、WLR_HEADLESS_OUTPUTS）与 XDG_CACHE_HOME 由实例管理。private 模式下三个 XDG settings 目录也由实例管理。冲突配置返回 INVALID_CONFIG；字体/主题资源变量仍可通过 env 明确覆盖。
+## 截图、日志与权限
 
-继承字体和主题不表示自动开放用户目录写权限、宿主 D-Bus 服务或 GPU 设备。具体边界和诊断见[沙盒说明](./docs/SANDBOX.md)。
+运行数据保存在当前工作区的 `.dsh/gui-debug/` 中：
 
-## host：连接当前桌面
+```text
+.dsh/gui-debug/
+├── instances/<instanceId>/
+│   ├── artifacts/    # 截图
+│   ├── logs/         # 环境、应用及辅助工具日志
+│   └── …             # 实例运行文件和设置
+└── profiles/         # 保存的调试配置
+```
 
-host 是只读的现有桌面连接。gui_debug_host connect 先请求用户确认，获准后返回 kind=host 的实例引用，供统一 capture/inspect 使用；disconnect 只撤销插件引用和观测权限，不停止真实桌面。
+停止环境或断开桌面连接后，截图和日志仍保留在磁盘上。历史文件不会在重启 DSH 后自动恢复运行实例或桌面授权。截图和日志可能包含应用内容，请按项目需要管理这些文件。
 
-host 没有 start、exec、stop 或输入操作，不改 WM、分辨率、桌面设置或窗口。授权绑定根会话、连接、配置和操作范围，不能由工具参数或 profile 授予；拒绝、取消、确认不可用时不执行。现有 DSH 执行限制仍然生效。初始截图路线是支持相应 Wayland 协议的 grim，不声明兼容所有桌面。详见 [host 契约](./docs/HOST.md)。
+独立图形环境不等于文件沙盒。应用仍受当前 DSH 执行策略约束，私有桌面设置也不会额外授予文件、设备或桌面服务权限。详见 [沙盒与桌面资源说明](./docs/SANDBOX.md)。
 
-## 统一工具
+## 常见问题
 
-| 工具 | 请求 | 结果 |
-| --- | --- | --- |
-| gui_debug_drivers | list / describe / check | 驱动目录、选项及默认配置、只读依赖检查 |
-| gui_debug_profile | list / get / put / delete | 工作区持久化配方 |
-| gui_debug_host | connect（reason、scopes、可选 options）/ disconnect | 经用户确认的 host 引用，或撤销结果 |
-| gui_debug_start | 可选 source 和 overrides，无应用命令 | 空受管实例 id、状态、沙盒信息、输出和能力 |
-| gui_debug_exec | 受管 instanceId、command、应用级覆盖 | applicationId、进程状态与日志入口 |
-| gui_debug_capture | instanceId、输出/区域/窗口目标 | PNG 附件、captureId、尺寸和坐标元数据 |
-| gui_debug_input | instanceId、动作数组、captureAfter | 完成数量、首个失败动作、可选截图 |
-| gui_debug_inspect | list / status / applications / logs | 实例/应用分页目录、状态、窗口或有界日志 |
-| gui_debug_stop | 受管 instanceId | 停止状态、残留进程 id、保留的产物目录；host 禁止 |
+**提示找不到依赖**
 
-日志默认读取 driver；读取某次应用日志时使用 source: { kind: 'application', applicationId }。实例仍可没有任何应用。首版 stop 停止整个实例，不提供单独终止某个应用或跨 DSH 重启接管实例的接口。
+让助手运行驱动检查，确认缺少的程序以及 DSH 实际能找到的路径。若刚刚安装工具或调整 PATH，重启 DSH，或为对应工具配置绝对路径。
 
-每个工具返回 Result<T>。调用级错误为 { ok: false, error: { code, message, ... } }。输入部分执行后，用 completedActions/failedAction 表达；操作后截图失败单独填写 captureError，不能使已经产生的输入副作用消失。
+**环境启动了，但没有截图或无法输入**
 
-Cordis 入口已注册 execute、output.schema 和附件渲染。日志省略 cursor 时读取最近一页；应用记录会把省略的 command.args 解析为 []。用户可输入 /gui-debug-disconnect-host 撤销本会话全部 host 读取授权；grant/confirm 不作为模型工具公开。
+请检查实例返回的可用能力，以及 `grim`、`wtype`、`wlrctl` 是否存在。已有桌面还可能缺少所需的 Wayland 协议。
 
-## 截图与输入语义
+**输入部分成功后报错**
 
-- 默认截主输出。区域坐标是输出局部逻辑坐标；直接窗口捕获需要 capture.window，不用可能被遮挡的屏幕裁剪冒充窗口内容。
-- 绝对输入携带 captureId 和原图像素坐标。工具层用驱动返回的仿射映射换算成布局逻辑坐标，再派发给驱动。
-- 检查截图归属、范围和布局版本；映射不可用、窗口移动等使旧映射失效时要求重新截图。坐标点击同时需要绝对定位与点击能力。
-- 动作包括文本、按键/修饰键、定时长按、相对/绝对移动、点击、滚动、拖拽、焦点和等待。各动作结束后释放键/按钮，不跨工具调用保留按下状态。
-- 一批最多 64 个动作，显式等待/长按/拖拽总时长最多 30 秒。同一实例的 exec、输入、截图和停止顺序调度；输入遇错不回滚已执行动作。
-- 派发前检查整批形状、能力和坐标，每步执行前仍确认实例与布局。wait 由工具层处理。
-- captureAfter 在部分失败后仍尝试截图，但不保证应用异步绘制已经完成。
+输入批次会在第一个失败动作处停止，已经执行的动作不会撤销。让助手先检查当前界面，再决定如何继续，避免重复点击或重复输入。每批最多 64 个动作，显式等待和长按等总时长不超过 30 秒，单次长按不超过 10 秒。
 
-当前后端支持输出/区域截图、文本、按键/长按、相对移动、当前位置点击和滚动；Sway 另支持稳定窗口 id 的列表及聚焦。绝对定位、带坐标点击、拖拽和直接窗口截图均明确报告不可用。captureAfter 默认 false；wait 使用 durationMs。截图若被附件服务缩小，坐标映射按交付尺寸调整；实际可用性以实例 capabilities 为准。
+**无头环境因沙盒或渲染错误启动失败**
 
-## 驱动与执行边界
+先查看环境日志。部分 Landlock `workspace-write` 环境中，Cage/wlroots 可能无法分配输出缓冲区。插件会报告失败并清理进程，不会自行放宽会话权限。
 
-DriverDeclaration 描述静态元数据；统一 GuiDriver<Options, Handle> 按 kind 区分 ManagedGuiDriver 与 HostGuiDriver。受管驱动必须实现：
+**Sway 提示运行路径过长**
 
-- probe：只读预检，不创建环境。预检能力是估计，实际能力在环境启动后确认。
-- start：只启动环境，返回 Handle 和环境快照。
-- exec：在该 Handle 对应的环境中启动应用，返回应用记录与受管进程。
-- inspect：刷新环境、输出、窗口和能力。
-- capture / input：完成统一操作，具体选用原生能力、IPC 或外部工具。
-- stop：清理驱动资源与受管进程，报告残留并保留证据。
+Sway 的 IPC socket 有路径长度限制。可以把调试工作区放到更短的路径，再重新创建环境。
 
-HostGuiDriver 只声明 probe、connect、inspect、capture、disconnect，并使用持有有效用户确认收据的 HostDriverContext；它没有受管驱动的生命周期或输入方法。类型品牌不代替运行时授权登记与检查。
+## 工具速查
 
-受管驱动的所有启动都经过 DriverContext.processes；host 只能使用受授权约束的 HostDriverContext.helpers。工具层先登记所有权，再按 DSH 本次会话策略包装 argv，通过 DSH subprocess 启动。预检和未登记完成的启动也绑定会话取消范围；执行前在最后一个异步准备步骤之后重新核对当前策略。受管环境 start 失败即使没有 Handle，也能回收已登记进程；应用启动交接完成后脱离调用取消信号，继续绑定实例生命周期。
+以下工具由助手调用，日常使用只需描述任务。
 
-并发 start 与等待用户确认的 host connect 共同预占最多 16 个活动名额，登记实例、失败或取消时释放预占。策略变化会取消旧会话范围、终止旧受管实例或撤销 host 引用；之后的新调用使用新的会话范围。会话清理成功会释放实例、Agent 和进程输出的内存引用，同时保留磁盘证据；清理失败的范围保留最小所有权信息供重试。
+| 工具 | 用途 |
+| --- | --- |
+| `gui_debug_drivers` | 查看驱动、默认配置和依赖检查结果 |
+| `gui_debug_profile` | 保存、读取和删除工作区调试配置 |
+| `gui_debug_start` | 创建空的 Cage 或 Sway 图形环境 |
+| `gui_debug_exec` | 在已有环境中启动应用 |
+| `gui_debug_capture` | 截图并返回图片 |
+| `gui_debug_input` | 执行输入动作，可在操作后截图 |
+| `gui_debug_inspect` | 查看实例、应用、窗口和日志 |
+| `gui_debug_stop` | 停止受管环境及其中的应用 |
+| `gui_debug_host` | 请求只读桌面访问或撤销连接 |
 
-helper 根进程完成后先有界回收残留范围，再排空输出，避免后代持有管道造成错误超时。Sway 配置文件通过非阻塞打开及普通文件检查，按字节有界读取至 1 MiB，并响应启动取消和截止时间；仍支持指向普通配置文件的符号链接，设备和 FIFO 则在读取前拒绝。
+## 参与开发
 
-独立显示环境本身不等于文件沙盒。沙盒策略不是 profile 的可配置选项。受管实例 runtime/cache/WM 配置应放在跨调用可见、策略允许的工作区实例目录，避免不同 bwrap 调用的私有 /tmp 隔断 socket。host 保留已确认的真实桌面连接，自己的日志和产物仍放在策略允许的目录。
-
-外部工具由用户提供，插件不安装它们。缺少 grim 可以使截图不可用而环境仍能启动；不满足请求尺寸等启动条件则失败。Cage 空启动要求可验证的版本 ≥ 0.3.1。Sway 当前不提供绝对指针定位和拖拽。当前应用路由只支持原生 Wayland，xwayland: true 明确失败；Cage 编译进的 lazy XWayland 不一定能关闭，false 表示插件不提供 X11 应用连接，Sway 配置则显式关闭它。
-
-## 校验与开发环境
-
-需要 Node 24+、DSH 0.2.0-rc.2 和 Linux/POSIX 本地执行环境。文件与进程 provider 必须共享同一个路径一致的本地工作区，远程执行世界当前明确拒绝。发布前会把 TypeScript 声明编译为 JavaScript，避免安装到 node_modules 后依赖类型擦除。
-
-[flake.nix](./flake.nix) 的 devShell 提供 Node、pnpm，以及测试用 Cage、Sway、grim、wtype、wlrctl、wayland-info、wlr-randr 和 foot。使用 nix develop path:. 进入；不会自动启动 compositor 或改变插件由用户提供运行依赖的边界。
-
-已有开发依赖时运行：
+修改源码后，可以运行：
 
 ```sh
 npm run check
 npm run build
-npm pack --dry-run
 ```
 
-校验包含公共/驱动 Schema、类型、基础边界和可控运行时测试。运行时模块通过 tsconfig.runtime.json 纳入 checkJs；实际驱动工厂、截图、快照和预检结果直接接受公共契约检查，build 也执行这项检查。声明层继续使用严格 TypeScript 配置；运行时采用渐进式检查，保留严格空值与可选属性检查，但暂未开启隐式 any 和数组索引检查，因此不代表整个运行时已完全类型化。
-
-纯 wait 动作在批次预检后只重新核对策略并响应取消，不为每一步启动显示探测 helper；后续实际输入仍刷新布局。按键 helper 的超时预算包含请求的长按时长和键盘初始化开销，单次长按上限仍为 10 秒。
-
-原生联调脚本使用实际 DSH fs/subprocess/sandbox provider、合成测试会话与私有无头显示，不连接真实桌面：
-
-```sh
-GUI_DEBUG_DSH_MANIFEST=/path/to/dsh/package.json \
-  nix develop path:. --command node scripts/native-integration.mjs
-```
-
-显式 path flake 会复制工作树，活 socket 可能阻断复制，应在启动环境前准备开发 shell。已经运行的 DSH 不会继承新终端的 PATH；可在驱动 options.executables 中提供已有工具的绝对路径。安装开发目录前运行 npm run build，再使用 DSH 的 plugin_manager install_bundle；npm pack 的 prepack 会自动编译。安装包使用 [cordis.patch.yml](./cordis.patch.yml) 注册插件，不需要手工修改 profile 文件。
-
-Sway 使用自身 IPC 设置显示模式和缩放。[Sway 1.12 的初始 socket 检查](https://raw.githubusercontent.com/swaywm/sway/1.12/sway/ipc-server.c)发生在应用 SWAYSOCK 之前，因此实例使用短 id，并在启动前按当前 Linux PID 上界检查 IPC 路径。工作区路径过长时会明确拒绝启动。
-
-本机原生验证发现：当前 Landlock workspace-write 确实阻止越界写入，但 Cage/wlroots 的输出缓冲区分配失败。插件在该执行器下返回 SANDBOX_UNAVAILABLE，保留日志并回收进程，不改变会话策略。全权限无头 Cage/Sway 的渲染验证与这个限制分开报告。
-
-真实桌面授权 UI、nested 父窗口与 GTK/GSettings 的主题一致性不由这些无头测试证明。私有显示连接和路径检查也不替代操作系统对恶意同 UID 进程的安全隔离。
+检查涵盖类型、工具契约和自动化测试，不替代真实桌面的兼容性验证。接口与配置示例见 [类型化示例](./examples/contracts.ts)；驱动扩展接口见 [驱动契约](./src/driver.ts)。
